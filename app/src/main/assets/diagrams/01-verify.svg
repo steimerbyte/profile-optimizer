@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="226" viewBox="0 0 360 226">
+  <rect x="0.5" y="0.5" width="359" height="225" fill="#0D0D0D" stroke="#242424"/>
+
+  <rect x="12.5" y="14.5" width="335" height="43" fill="none" stroke="#242424"/>
+  <text x="24" y="33" font-family="monospace" font-size="12" font-weight="bold" fill="#FFFFFF">APK · DEX / BYTECODE</text>
+  <text x="24" y="49" font-family="monospace" font-size="9" fill="#7A7A7A">pm.dexopt.install-fast = skip</text>
+
+  <path d="M180,58 L180,80" stroke="#D71921" stroke-width="1"/>
+  <path d="M176,79 L180,86 L184,79 Z" fill="#D71921"/>
+  <text x="192" y="75" font-family="monospace" font-size="8" fill="#7A7A7A">kein AOT beim Installieren</text>
+
+  <rect x="12.5" y="86.5" width="335" height="45" fill="none" stroke="#D71921"/>
+  <text x="24" y="105" font-family="monospace" font-size="12" font-weight="bold" fill="#FFFFFF">KEIN AOT-CODE</text>
+  <text x="24" y="121" font-family="monospace" font-size="9" fill="#D71921">status = verify</text>
+
+  <path d="M180,132 L180,158" stroke="#242424" stroke-width="1"/>
+  <path d="M176,157 L180,164 L184,157 Z" fill="#242424"/>
+  <text x="192" y="150" font-family="monospace" font-size="8" fill="#7A7A7A">JIT erst zur Laufzeit</text>
+
+  <rect x="12.5" y="166.5" width="335" height="45" fill="none" stroke="#242424"/>
+  <text x="24" y="185" font-family="monospace" font-size="12" font-weight="bold" fill="#FFFFFF">JEDER START INTERPRETIERT</text>
+  <text x="24" y="201" font-family="monospace" font-size="9" fill="#7A7A7A">kostet Startzeit und CPU</text>
+</svg>

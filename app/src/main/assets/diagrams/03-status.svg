@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="110" viewBox="0 0 360 110">
+  <rect x="0.5" y="0.5" width="359" height="109" fill="#0D0D0D" stroke="#242424"/>
+
+  <rect x="12.5" y="18.5" width="83" height="29" fill="#141414" stroke="#242424"/>
+  <text x="54" y="37" font-family="monospace" font-size="9" fill="#7A7A7A" text-anchor="middle">VERIFY</text>
+
+  <rect x="96.5" y="18.5" width="83" height="29" fill="#141414" stroke="#242424"/>
+  <text x="138" y="37" font-family="monospace" font-size="9" fill="#7A7A7A" text-anchor="middle">QUICKEN</text>
+
+  <rect x="180.5" y="18.5" width="83" height="29" fill="#2A0A0B" stroke="#D71921"/>
+  <text x="222" y="37" font-family="monospace" font-size="9" font-weight="bold" fill="#FFFFFF" text-anchor="middle">SPEED-PROFILE</text>
+
+  <rect x="264.5" y="18.5" width="83" height="29" fill="#0E2A1D" stroke="#39D98A"/>
+  <text x="306" y="37" font-family="monospace" font-size="9" font-weight="bold" fill="#FFFFFF" text-anchor="middle">SPEED</text>
+
+  <text x="54" y="62" font-family="monospace" font-size="8" fill="#7A7A7A" text-anchor="middle">0 %</text>
+  <text x="138" y="62" font-family="monospace" font-size="8" fill="#7A7A7A" text-anchor="middle">wenige</text>
+  <text x="222" y="62" font-family="monospace" font-size="8" fill="#D71921" text-anchor="middle">Hot-Methods</text>
+  <text x="306" y="62" font-family="monospace" font-size="8" fill="#39D98A" text-anchor="middle">100 %</text>
+
+  <path d="M12,78 L344,78" stroke="#242424" stroke-width="1"/>
+  <path d="M343,74 L350,78 L343,82 Z" fill="#242424"/>
+  <text x="12" y="96" font-family="monospace" font-size="8" fill="#7A7A7A">ANTEIL KOMPILIERTER METHODEN</text>
+</svg>

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="268" viewBox="0 0 360 268">
+  <rect x="0.5" y="0.5" width="359" height="267" fill="#0D0D0D" stroke="#242424"/>
+
+  <rect x="70.5" y="12.5" width="219" height="37" fill="none" stroke="#D71921"/>
+  <text x="180" y="35" font-family="monospace" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">pm compile -m speed-profile</text>
+
+  <path d="M180,50 L180,68" stroke="#242424" stroke-width="1"/>
+  <path d="M176,67 L180,74 L184,67 Z" fill="#242424"/>
+
+  <path d="M180,74 L250,96 L180,118 L110,96 Z" fill="none" stroke="#242424"/>
+  <text x="180" y="100" font-family="monospace" font-size="10" fill="#FFFFFF" text-anchor="middle">PROFIL?</text>
+
+  <path d="M180,118 L180,132" stroke="#242424" stroke-width="1"/>
+  <path d="M90,132 L270,132" stroke="#242424" stroke-width="1"/>
+  <path d="M90,132 L90,146" stroke="#D71921" stroke-width="1"/>
+  <path d="M86,145 L90,152 L94,145 Z" fill="#D71921"/>
+  <path d="M270,132 L270,146" stroke="#39D98A" stroke-width="1"/>
+  <path d="M266,145 L270,152 L274,145 Z" fill="#39D98A"/>
+  <text x="96" y="128" font-family="monospace" font-size="9" fill="#D71921">NEIN</text>
+  <text x="264" y="128" font-family="monospace" font-size="9" fill="#39D98A" text-anchor="end">JA</text>
+
+  <rect x="20.5" y="152.5" width="139" height="49" fill="none" stroke="#D71921"/>
+  <text x="32" y="172" font-family="monospace" font-size="11" font-weight="bold" fill="#FFFFFF">FILTER → VERIFY</text>
+  <text x="32" y="188" font-family="monospace" font-size="8" fill="#D71921">nichts kompiliert</text>
+
+  <rect x="200.5" y="152.5" width="139" height="49" fill="none" stroke="#39D98A"/>
+  <text x="212" y="172" font-family="monospace" font-size="11" font-weight="bold" fill="#FFFFFF">SPEED-PROFILE</text>
+  <text x="212" y="188" font-family="monospace" font-size="8" fill="#39D98A">nur Hot-Methods</text>
+
+  <path d="M90,202 L90,214" stroke="#D71921" stroke-width="1"/>
+  <path d="M86,213 L90,220 L94,213 Z" fill="#D71921"/>
+  <path d="M270,202 L270,214" stroke="#39D98A" stroke-width="1"/>
+  <path d="M266,213 L270,220 L274,213 Z" fill="#39D98A"/>
+
+  <rect x="20.5" y="220.5" width="139" height="39" fill="none" stroke="#D71921"/>
+  <text x="32" y="238" font-family="monospace" font-size="10" font-weight="bold" fill="#FFFFFF">Success gemeldet</text>
+  <text x="32" y="252" font-family="monospace" font-size="8" fill="#D71921">status bleibt verify</text>
+
+  <rect x="200.5" y="220.5" width="139" height="39" fill="none" stroke="#39D98A"/>
+  <text x="212" y="238" font-family="monospace" font-size="10" font-weight="bold" fill="#FFFFFF">Code in .odex</text>
+  <text x="212" y="252" font-family="monospace" font-size="8" fill="#39D98A">ab Start genutzt</text>
+</svg>
