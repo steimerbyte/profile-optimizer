@@ -12,8 +12,8 @@ android {
         applicationId = "com.steimerbyte.profileoptimizer"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.1"
     }
 
     buildTypes {
@@ -33,6 +33,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

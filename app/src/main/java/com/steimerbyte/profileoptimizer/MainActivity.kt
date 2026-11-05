@@ -21,9 +21,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -39,7 +42,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -53,14 +55,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
@@ -69,15 +69,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.caverock.androidsvg.SVG
 import moe.shizuku.server.IShizukuService
 import rikka.shizuku.Shizuku
 
+// Layoutsystem: nothingos-app, Abschnitt 1
 private val Accent = Color(0xFFD71921)
 private val Dim = Color(0xFF7A7A7A)
 private val Panel = Color(0xFF0D0D0D)
 private val Line = Color(0xFF242424)
 private val Good = Color(0xFF39D98A)
+private val Warn = Color(0xFFE0A32E)
 
 private const val REQ_PERMISSION = 1001
 
@@ -111,6 +116,9 @@ private data class RunResult(
     val gotAot: Boolean get() = status == "speed-profile" || status == "speed"
 }
 
+// /proc/stat und /proc/meminfo in einem Aufruf; lastLoad aus der Differenz zweier Proben.
+private data class SystemSample(val total: Long, val idle: Long, val ram: Float)
+
 class MainActivity : ComponentActivity() {
 
     private var apps by mutableStateOf<List<AppEntry>>(emptyList())
@@ -124,11 +132,14 @@ class MainActivity : ComponentActivity() {
     private var onlyPending by mutableStateOf(false)
     private var currentPkg by mutableStateOf<String?>(null)
     private var cpuHistory by mutableStateOf<List<Float>>(emptyList())
+    private var ramHistory by mutableStateOf<List<Float>>(emptyList())
     private var runDone by mutableStateOf(0)
     private var runTotal by mutableStateOf(0)
     private var checks by mutableStateOf<List<Check>?>(null)
     private var gateOpen by mutableStateOf(false)
     private var results by mutableStateOf<List<RunResult>>(emptyList())
+    private var snapshotAt by mutableStateOf("")
+    private var showAbout by mutableStateOf(false)
 
     private val headerRe = Regex("^ {2}\\[([A-Za-z0-9_.]+)]$")
     private val statusRe = Regex("status=([a-z-]+)")
@@ -165,7 +176,15 @@ class MainActivity : ComponentActivity() {
         Shizuku.addBinderDeadListener(deadListener)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
-        setContent { AppTheme { if (gateOpen) Screen() else PreflightScreen() } }
+        setContent {
+            AppTheme {
+                when {
+                    showAbout -> AboutScreen()
+                    gateOpen -> Screen()
+                    else -> PreflightScreen()
+                }
+            }
+        }
 
         startPreflight()
     }
@@ -224,13 +243,27 @@ class MainActivity : ComponentActivity() {
     private fun statusOf(pkg: String): String =
         statusRe.find(runShell("dumpsys", "package", pkg))?.groupValues?.get(1) ?: "?"
 
-    private fun readCpuSample(): LongArray? {
-        val line = runShell("cat", "/proc/stat")
-            .lineSequence().firstOrNull { it.startsWith("cpu ") } ?: return null
-        val nums = line.trim().split(Regex("\\s+")).drop(1).mapNotNull { it.toLongOrNull() }
-        if (nums.size < 5) return null
-        val idle = nums[3] + (nums.getOrNull(4) ?: 0L)
-        return longArrayOf(nums.sum(), idle)
+    private fun readSample(): SystemSample? {
+        val out = runShell("cat", "/proc/stat", "/proc/meminfo")
+        var total = 0L
+        var idle = 0L
+        var memTotal = 0L
+        var memAvailable = 0L
+        for (line in out.lineSequence()) {
+            when {
+                line.startsWith("cpu ") -> {
+                    val nums = line.trim().split(Regex("\\s+")).drop(1).mapNotNull { it.toLongOrNull() }
+                    if (nums.size < 5) return null
+                    total = nums.sum()
+                    idle = nums[3] + nums[4]
+                }
+                line.startsWith("MemTotal:") -> memTotal = line.filter { it.isDigit() }.toLongOrNull() ?: 0L
+                line.startsWith("MemAvailable:") -> memAvailable = line.filter { it.isDigit() }.toLongOrNull() ?: 0L
+            }
+        }
+        if (total == 0L) return null
+        val ram = if (memTotal > 0L) (memTotal - memAvailable).toFloat() / memTotal else 0f
+        return SystemSample(total, idle, ram.coerceIn(0f, 1f))
     }
 
     // ---- Vorflugprüfung ----
@@ -317,7 +350,7 @@ class MainActivity : ComponentActivity() {
         out += Check(
             "AKKU",
             if (onCharge) "am Ladegerät · $level %" else "$level % · nicht am Ladegerät",
-            if (onCharge || level < 0 || level >= 20) CheckState.OK else CheckState.WARN,
+            if (onCharge || level < 0) CheckState.OK else CheckState.WARN,
             blocking = false
         )
         return out
@@ -372,6 +405,7 @@ class MainActivity : ComponentActivity() {
             progress = "Lese Dexopt-Status aller Pakete …"
             val map = withContext(Dispatchers.IO) { parseStatuses(runShell("dumpsys", "package")) }
             apps = apps.map { it.copy(status = map[it.pkg] ?: "?") }
+            snapshotAt = SimpleDateFormat("HH:mm", Locale.GERMAN).format(Date())
             progress = "${map.size} Statuswerte gelesen."
             busy = false
         }
@@ -390,25 +424,30 @@ class MainActivity : ComponentActivity() {
             runTotal = targets.size
             runDone = 0
             cpuHistory = emptyList()
+            ramHistory = emptyList()
             results = emptyList()
             progress = ""
+            // Quersystem-Regel: eine Probe nach der anderen, im IO-Dispatcher, Ende beim Verlassen
             val sampler = launch(Dispatchers.IO) {
-                var previous = readCpuSample()
+                var previous = readSample()
                 while (isActive) {
                     delay(700)
-                    val sample = readCpuSample() ?: continue
+                    val sample = readSample() ?: continue
                     val before = previous
-                    if (before != null) {
-                        val deltaTotal = sample[0] - before[0]
-                        val deltaIdle = sample[1] - before[1]
-                        if (deltaTotal > 0) {
-                            val load = (1.0 - deltaIdle.toDouble() / deltaTotal).toFloat().coerceIn(0f, 1f)
-                            withContext(Dispatchers.Main.immediate) {
-                                cpuHistory = (cpuHistory + load).takeLast(48)
-                            }
-                        }
+                    previous = sample
+                    if (before == null) continue
+                    val deltaTotal = sample.total - before.total
+                    val deltaIdle = sample.idle - before.idle
+                    val load = if (deltaTotal > 0) {
+                        (1.0 - deltaIdle.toDouble() / deltaTotal).toFloat().coerceIn(0f, 1f)
+                    } else {
+                        0f
                     }
                     previous = sample
+                    withContext(Dispatchers.Main.immediate) {
+                        cpuHistory = (cpuHistory + load).takeLast(48)
+                        ramHistory = (ramHistory + sample.ram).takeLast(48)
+                    }
                 }
             }
             val collected = mutableListOf<RunResult>()
@@ -455,7 +494,7 @@ class MainActivity : ComponentActivity() {
         selected = if (selected.contains(pkg)) selected - pkg else selected + pkg
     }
 
-    // ---- UI ----
+    // ---- UI: Vorflug ----
 
     @Composable
     private fun PreflightScreen() {
@@ -468,94 +507,79 @@ class MainActivity : ComponentActivity() {
                 .systemBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "PROFILE OPTIMIZER",
-                color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp
+            Spacer(Modifier.height(8.dp))
+            Osw(
+                kicker = "NOTHING OS · VORFLUGPRÜFUNG · ${Build.DEVICE.uppercase()}",
+                title = "PROFILE OPTIMIZER",
+                onKickerClick = { showAbout = true }
             )
-            Micro("NOTHING OS · VORFLUGPRÜFUNG", color = Dim)
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(12.dp))
 
             if (list == null) {
-                Micro("PRÜFE …", color = Accent)
-                Spacer(Modifier.height(12.dp))
-                LinearProgressIndicator(
-                    Modifier.fillMaxWidth().height(2.dp),
-                    color = Accent,
-                    trackColor = Line
-                )
+                Micro("PRÜFE …", Accent)
             } else {
-                for (check in list) CheckRow(check)
-                Spacer(Modifier.height(10.dp))
-                if (blocked) {
-                    Micro("OHNE DIE ROTEN PUNKTE LÄUFT NICHTS", color = Accent)
-                } else {
-                    Micro("ALLES, WAS DER LAUF BRAUCHT", color = Good)
+                OutlineBox {
+                    Column(Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        list.forEach { CheckRow(it) }
+                    }
                 }
+                Spacer(Modifier.height(10.dp))
+                Micro(
+                    if (blocked) "BLOCKIERENDE PRÜFUNGEN OFFEN" else "ALLES, WAS DER LAUF BRAUCHT",
+                    if (blocked) Warn else Good
+                )
+            }
+            if (progress.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Micro(progress, Warn)
             }
 
             Spacer(Modifier.weight(1f))
 
-            if (list == null) {
-                Spacer(Modifier.height(40.dp))
-            } else if (blocked) {
-                if (shizukuState == ShizukuState.ALIVE || shizukuState == ShizukuState.DENIED) {
-                    BigButton("ERLAUBEN", Modifier.fillMaxWidth(), filled = true) { requestShizuku() }
-                    Spacer(Modifier.height(8.dp))
+            when {
+                list == null -> Unit
+                blocked -> {
+                    if (shizukuState == ShizukuState.ALIVE || shizukuState == ShizukuState.DENIED) {
+                        WideButton("ERLAUBEN") { requestShizuku() }
+                        Spacer(Modifier.height(8.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            MiniButton("ERNEUT PRÜFEN") { startPreflight() }
+                        }
+                    } else {
+                        WideButton("ERNEUT PRÜFEN") { startPreflight() }
+                    }
                 }
-                WideButton("ERNEUT PRÜFEN") { startPreflight() }
-            } else {
-                BigButton("WEITER", Modifier.fillMaxWidth(), filled = true) { enterApp() }
+                else -> WideButton("WEITER") { enterApp() }
             }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(16.dp))
         }
     }
 
     @Composable
     private fun CheckRow(check: Check) {
-        val color = when (check.state) {
-            CheckState.OK -> Good
-            CheckState.WARN -> Color(0xFFE0A32E)
-            CheckState.FAIL -> Accent
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 9.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Box(
-                Modifier
-                    .padding(top = 4.dp)
-                    .width(6.dp)
-                    .height(6.dp)
-                    .background(color)
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Micro(check.title, color = color, size = 11.sp)
-                    if (!check.blocking) {
-                        Spacer(Modifier.width(8.dp))
-                        Micro("OPTIONAL", size = 8.sp)
-                    }
+        val tone = if (check.state == CheckState.OK) Good else Warn
+        Column(Modifier.fillMaxWidth().padding(vertical = 7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Micro(check.title, tone)
+                if (!check.blocking) {
+                    Spacer(Modifier.width(8.dp))
+                    Micro("OPTIONAL")
                 }
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    check.detail,
-                    color = Color.White.copy(alpha = 0.72f),
-                    fontSize = 11.sp, fontFamily = FontFamily.Monospace
-                )
             }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                check.detail,
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 10.sp, fontFamily = FontFamily.Monospace, letterSpacing = 0.2.sp
+            )
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
     }
 
+    // ---- UI: Hauptschirm ----
+
     @Composable
     private fun Screen() {
-        val pending = apps.count { !it.hasAot }
-        val visible = if (onlyPending) apps.filter { !it.hasAot } else apps
-        val doneFraction = if (apps.isEmpty()) 0f else (apps.size - pending).toFloat() / apps.size
-
         Column(
             Modifier
                 .fillMaxSize()
@@ -563,329 +587,293 @@ class MainActivity : ComponentActivity() {
                 .systemBarsPadding()
                 .padding(horizontal = 16.dp)
         ) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "PROFILE OPTIMIZER",
-                color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp
-            )
-            Micro("NOTHING OS · AOT-COMPILER · " + Build.DEVICE.uppercase(), color = Dim)
-            Spacer(Modifier.height(14.dp))
-
-            ChargeState()
-            Spacer(Modifier.height(10.dp))
-            ShizukuStateLine()
-            Spacer(Modifier.height(14.dp))
-
-            WideButton("NOCH OHNE AOT WÄHLEN · $pending") {
-                selected = apps.filter { !it.hasAot }.map { it.pkg }.toSet()
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            if (busy && runTotal > 0) {
-                RunPanel(runDone, runTotal, currentPkg, cpuHistory)
-                Spacer(Modifier.height(12.dp))
-            }
-
-            OutlineBox {
-                Row(
-                    Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Speedo(doneFraction, (doneFraction * 100).toInt())
-                    Spacer(Modifier.width(16.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "$pending / ${apps.size}",
-                            color = if (pending == 0) Good else Color.White,
-                            fontSize = 24.sp, fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Micro("OHNE AOT-CODE")
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Micro(
-                            (if (charging) "AM LADEGERÄT" else "NICHT AM NETZ") +
-                                if (batteryLevel >= 0) " · $batteryLevel %" else "",
-                            color = if (charging) Good else Accent
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Pill(if (onlyPending) "FILTER AN" else "FILTER AUS", onlyPending) {
-                            onlyPending = !onlyPending
-                        }
-                    }
-                }
-                ThinBar(doneFraction)
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    if (showInfo) "← ZURÜCK" else "ERKLÄRUNG →",
-                    color = Accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.2.sp,
-                    modifier = Modifier
-                        .clickable { showInfo = !showInfo }
-                        .padding(vertical = 8.dp, horizontal = 2.dp)
-                )
-                Text(
-                    "NEU LADEN",
-                    color = Dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.2.sp,
-                    modifier = Modifier
-                        .clickable {
-                            if (!busy) lifecycleScope.launch {
-                                loadApps()
-                                if (shizukuState == ShizukuState.GRANTED) loadStatuses()
-                            }
-                        }
-                        .padding(vertical = 8.dp, horizontal = 2.dp)
-                )
-            }
-
             Spacer(Modifier.height(8.dp))
+            Osw(
+                kicker = "NOTHING OS · AOT-COMPILER · ${Build.DEVICE.uppercase()}",
+                title = "PROFILE OPTIMIZER",
+                action = {
+                    MiniButton(if (showInfo) "ZURÜCK" else "ERKLÄRUNG") { showInfo = !showInfo }
+                },
+                onKickerClick = { showAbout = true }
+            )
+            Spacer(Modifier.height(4.dp))
+            Micro(
+                if (snapshotAt.isEmpty()) "SCHNAPPSCHUSS — · NICHT AUTOMATISCH"
+                else "SCHNAPPSCHUSS $snapshotAt · NICHT AUTOMATISCH"
+            )
+            Spacer(Modifier.height(12.dp))
 
             if (showInfo) {
-                Explanation()
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Explanation()
+                }
+                Spacer(Modifier.height(12.dp))
+                WideButton("ZURÜCK ZUR LISTE") { showInfo = false }
+                Spacer(Modifier.height(16.dp))
             } else {
-                BigButton(
-                    "OPTIMIEREN · ${selected.size}",
-                    Modifier.fillMaxWidth(),
-                    filled = true,
-                    enabled = selected.isNotEmpty() && !busy && shizukuState == ShizukuState.GRANTED
-                ) { optimizeSelected() }
-                if (progress.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(progress, color = Dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                }
-                if (results.isNotEmpty() && !busy) {
-                    Spacer(Modifier.height(10.dp))
-                    ResultPanel(results)
-                }
-                Spacer(Modifier.height(10.dp))
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(visible, key = { it.pkg }) { app ->
-                        AppRow(app)
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                MainSection()
+            }
+        }
+    }
+
+    @Composable
+    private fun ColumnScope.MainSection() {
+        val pending = apps.count { !it.hasAot }
+        val visible = if (onlyPending) apps.filter { !it.hasAot } else apps
+        val share = if (apps.isEmpty()) 0 else (apps.size - pending) * 100 / apps.size
+
+        // Slot 2: Live-Panel
+        if (busy && runTotal > 0) {
+            RunSection()
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // Slot 3 Summary, Slot 4 Controls und Liste liegen in einem Scroller:
+        // im Querformat bekommt die Liste so die volle Höhe, sobald man die Kennzahlen weggescrollt hat.
+        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+            item {
+                SummaryPanel(
+                    listOf(
+                        "APPS" to "${apps.size}",
+                        "OHNE AOT" to "$pending",
+                        "MIT AOT" to "$share %"
+                    )
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Pill("NUR OHNE AOT", onlyPending) { onlyPending = !onlyPending }
+                    Spacer(Modifier.weight(1f))
+                    MiniButton("AKTUALISIEREN") {
+                        if (!busy) lifecycleScope.launch {
+                            loadApps()
+                            if (shizukuState == ShizukuState.GRANTED) loadStatuses()
+                        }
                     }
                 }
             }
-        }
-    }
-
-    @Composable
-    private fun ChargeState() {
-        if (charging) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(4.dp).height(4.dp).background(Good))
-                Spacer(Modifier.width(8.dp))
-                Micro("AM LADEGERÄT" + if (batteryLevel >= 0) " · $batteryLevel %" else "", color = Good)
+            if (!charging) {
+                item {
+                    Spacer(Modifier.height(6.dp))
+                    Micro(
+                        "NICHT AM LADEGERÄT · 10–40 s alle Kerne pro App, 10–20 % Akku. " +
+                            "Kabel anstecken, bevor du alles optimierst.",
+                        Warn
+                    )
+                }
             }
-            return
-        }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .background(Accent.copy(alpha = 0.10f), RoundedCornerShape(2.dp))
-                .border(1.dp, Accent.copy(alpha = 0.45f), RoundedCornerShape(2.dp))
-                .padding(12.dp)
-        ) {
-            Column {
-                Micro("NICHT AM LADEGERÄT", color = Accent)
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Jede App belegt beim Kompilieren 10–40 s alle CPU-Kerne. " +
-                        "Steck das Kabel an, bevor du alle Apps auf einmal optimierst — " +
-                        "sonst zieht das 10–20 % Akku, und Android drosselt bei niedrigem Stand.",
-                    color = Color.White.copy(alpha = 0.80f), fontSize = 12.sp, lineHeight = 17.sp
-                )
+            if (progress.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(6.dp))
+                    Micro(progress)
+                }
+            }
+            item { Spacer(Modifier.height(10.dp)) }
+            when {
+                apps.isEmpty() -> item { Micro("LADE …", Accent) }
+                visible.isEmpty() -> item { Micro("KEINE DATEN") }
+                else -> items(visible, key = { it.pkg }) { app ->
+                    AppRow(app)
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                }
             }
         }
-    }
 
-    @Composable
-    private fun ShizukuStateLine() {
-        val (text, color) = when (shizukuState) {
-            ShizukuState.GRANTED -> "SHIZUKU · BEREIT" to Good
-            ShizukuState.ALIVE -> "SHIZUKU · BERECHTIGUNG FEHLT" to Accent
-            ShizukuState.DENIED -> "SHIZUKU · VERWEIGERT" to Accent
-            ShizukuState.DEAD -> "SHIZUKU · NICHT ERREICHBAR" to Accent
-            ShizukuState.UNKNOWN -> "SHIZUKU · PRÜFE …" to Dim
+        // Slot 7: Ergebnis-Overlay
+        if (results.isNotEmpty() && !busy) {
+            Spacer(Modifier.height(10.dp))
+            ResultPanel(
+                changed = results.count { it.gotAot },
+                unchanged = results.count { !it.gotAot },
+                failed = results.filter { !it.gotAot }.map { it.pkg }
+            )
         }
+
+        // Slot 6: ActionBar
+        Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.width(4.dp).height(4.dp).background(color))
+            Box(Modifier.weight(1f)) {
+                WideButton(
+                    "OPTIMIEREN · ${selected.size}",
+                    enabled = selected.isNotEmpty() && !busy && shizukuState == ShizukuState.GRANTED
+                ) { optimizeSelected() }
+            }
             Spacer(Modifier.width(8.dp))
-            Micro(text, color = color)
-            if (shizukuState == ShizukuState.ALIVE || shizukuState == ShizukuState.DENIED) {
-                Spacer(Modifier.width(12.dp))
-                SquareButton("ERLAUBEN") { requestShizuku() }
+            MiniButton("OHNE AOT · $pending") {
+                selected = apps.filter { !it.hasAot }.map { it.pkg }.toSet()
             }
         }
-    }
-
-    @Composable
-    private fun BigButton(
-        label: String,
-        modifier: Modifier = Modifier,
-        filled: Boolean = false,
-        enabled: Boolean = true,
-        onClick: () -> Unit
-    ) {
-        val active = filled && enabled
-        Box(
-            modifier
-                .background(if (active) Accent else Panel, RoundedCornerShape(2.dp))
-                .border(1.dp, if (active) Accent else Line, RoundedCornerShape(2.dp))
-                .clickable(enabled = enabled) { onClick() }
-                .padding(vertical = 14.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                label,
-                color = when {
-                    !enabled -> Dim
-                    active -> Color.Black
-                    else -> Color.White
-                },
-                fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace, letterSpacing = 1.2.sp
-            )
-        }
-    }
-
-    @Composable
-    private fun ResultPanel(list: List<RunResult>) {
-        val profiled = list.filter { it.status == "speed-profile" }
-        val fallback = list.filter { it.status == "speed" }
-        val failed = list.filter { !it.gotAot }
-        OutlineBox {
-            Column(Modifier.padding(12.dp)) {
-                Micro("ERGEBNIS · ${list.size} " + if (list.size == 1) "APP" else "APPS", color = Accent)
-                Spacer(Modifier.height(10.dp))
-                ResultCount("SPEED-PROFILE", profiled.size, Good, "Profil da, Hot-Methods kompiliert")
-                ResultCount("SPEED", fallback.size, Good, "kein Profil, komplett kompiliert")
-                ResultCount("OHNE AOT", failed.size, if (failed.isEmpty()) Dim else Accent, "nicht kompilierbar")
-                if (fallback.isNotEmpty()) {
-                    Spacer(Modifier.height(9.dp))
-                    Micro("FALLBACK · OHNE PROFIL", color = Dim)
-                    Spacer(Modifier.height(4.dp))
-                    ResultNames(fallback)
-                }
-                if (failed.isNotEmpty()) {
-                    Spacer(Modifier.height(9.dp))
-                    Micro("NICHT KOMPILIERT", color = Accent)
-                    Spacer(Modifier.height(4.dp))
-                    ResultNames(failed)
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun ResultCount(label: String, count: Int, color: Color, hint: String) {
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 3.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                label, color = color, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace, letterSpacing = 1.sp
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                hint, color = Dim, fontSize = 9.sp, maxLines = 1,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                "$count", color = color, fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
-            )
-        }
-    }
-
-    @Composable
-    private fun ResultNames(list: List<RunResult>) {
-        list.take(6).forEach { result ->
-            Text(
-                "${result.label} · ${result.status}",
-                color = Color.White.copy(alpha = 0.70f), fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace, maxLines = 1
-            )
-        }
-        if (list.size > 6) {
-            Text(
-                "+${list.size - 6} weitere", color = Dim, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace
-            )
-        }
+        Spacer(Modifier.height(16.dp))
     }
 
     @Composable
     private fun AppRow(app: AppEntry) {
         val isSelected = selected.contains(app.pkg)
         val running = currentPkg == app.pkg
-        val done = app.hasAot
+        val (chipText, chipTone) = when {
+            running -> "LÄUFT" to Accent
+            app.status == "?" -> "—" to Dim
+            app.status == "speed-profile" -> "SPEED-PROFILE" to Good
+            app.status == "speed" -> "SPEED" to Accent
+            else -> app.status.uppercase() to Warn
+        }
         Row(
             Modifier
                 .fillMaxWidth()
                 .clickable { toggle(app.pkg) }
-                .padding(vertical = 10.dp),
+                .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 Modifier
-                    .width(14.dp)
-                    .height(14.dp)
-                    .border(1.dp, if (isSelected) Accent else Line)
+                    .width(2.dp)
+                    .height(26.dp)
                     .background(if (isSelected) Accent else Color.Transparent)
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(app.label, color = Color.White, fontSize = 13.sp, maxLines = 1)
+                Body(app.label)
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    app.pkg,
-                    color = Dim, fontSize = 9.sp, fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.4.sp, maxLines = 1
-                )
+                Mono(app.pkg)
             }
             Spacer(Modifier.width(8.dp))
-            val chipText = when {
-                running -> "…"
-                app.status == "?" -> "—"
-                else -> app.status.uppercase()
+            Chip(chipText, chipTone)
+        }
+    }
+
+    @Composable
+    private fun RunSection() {
+        val pulse = rememberInfiniteTransition(label = "run")
+        val dotAlpha by pulse.animateFloat(
+            initialValue = 0.15f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(650), RepeatMode.Reverse),
+            label = "dot"
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).background(Accent.copy(alpha = dotAlpha)))
+            Spacer(Modifier.width(8.dp))
+            Micro("LÄUFT · $runDone / $runTotal", Accent)
+        }
+        Spacer(Modifier.height(8.dp))
+        LivePanel(cpuHistory, ramHistory)
+        Spacer(Modifier.height(8.dp))
+        Bar(if (runTotal == 0) 0f else runDone.toFloat() / runTotal)
+        Spacer(Modifier.height(6.dp))
+        Mono(currentPkg.orEmpty())
+    }
+
+    @Composable
+    private fun ResultPanel(changed: Int, unchanged: Int, failed: List<String>) {
+        OutlineBox {
+            Column(Modifier.padding(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Micro("ERGEBNIS", Accent)
+                    Spacer(Modifier.weight(1f))
+                    Micro("${changed + unchanged} APPS")
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Micro("GEÄNDERT")
+                        Value("$changed", Good)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Micro("UNVERÄNDERT")
+                        Value("$unchanged", if (unchanged == 0) Dim else Warn)
+                    }
+                }
+                if (failed.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Micro("OHNE AOT", Warn)
+                    Spacer(Modifier.height(3.dp))
+                    failed.take(6).forEach { Mono(it) }
+                    if (failed.size > 6) Mono("+${failed.size - 6} WEITERE")
+                }
             }
-            val chipColor = when {
-                running -> Accent
-                done -> Good
-                else -> Accent
-            }
-            Box(
+        }
+    }
+
+    // ---- UI: About (Pflicht-Sektion, erreichbar über die Kicker-Zeile) ----
+
+    @Composable
+    private fun AboutScreen() {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .systemBarsPadding()
+                .padding(horizontal = 16.dp)
+        ) {
+            Spacer(Modifier.height(8.dp))
+            Osw(
+                kicker = "NOTHING OS · AOT-COMPILER · ${Build.DEVICE.uppercase()}",
+                title = "ÜBER",
+                action = { MiniButton("ZURÜCK") { showAbout = false } }
+            )
+            Spacer(Modifier.height(12.dp))
+            Column(
                 Modifier
-                    .border(1.dp, chipColor.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
             ) {
-                Text(
-                    chipText, color = chipColor,
-                    fontSize = 8.sp, fontFamily = FontFamily.Monospace, letterSpacing = 0.8.sp
+                AboutPanel(
+                    name = "PROFILE OPTIMIZER",
+                    version = "Version ${BuildConfig.VERSION_NAME} · ${Build.MODEL}",
+                    purpose = "Bringt Drittanbieter-Apps per Shizuku auf AOT-Code und misst den Status zurück.",
+                    commands = listOf(
+                        "dumpsys package",
+                        "dumpsys package <paket>",
+                        "cmd package compile -m speed-profile -f <paket>",
+                        "cmd package compile -m speed -f <paket>",
+                        "cat /proc/stat /proc/meminfo",
+                        "ls /apex/com.android.art/bin/dex2oat64",
+                        "getprop pm.dexopt.install-fast"
+                    )
                 )
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
 
     @Composable
+    private fun AboutPanel(name: String, version: String, purpose: String, commands: List<String>) {
+        OutlineBox {
+            Column(Modifier.padding(10.dp)) {
+                Title(name)
+                Spacer(Modifier.height(4.dp))
+                Micro(version)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Function over form.", color = Accent, fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    purpose, color = Color.White.copy(alpha = 0.84f), fontSize = 12.sp,
+                    lineHeight = 18.sp, letterSpacing = 0.3.sp, fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.height(16.dp))
+                Micro("KERNKOMMANDOS:")
+                Spacer(Modifier.height(6.dp))
+                commands.forEach { command ->
+                    Mono(command)
+                    Spacer(Modifier.height(3.dp))
+                }
+            }
+        }
+    }
+
+    // ---- UI: Erklärung (drei SVG-Diagramme bleiben unverändert) ----
+
+    @Composable
     private fun Explanation() {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-        ) {
+        Column(Modifier.fillMaxWidth()) {
             Section(
                 "01 · WAS DIE APP TUT",
                 "Android übersetzt App-Code nicht beim Installieren in Maschinencode. Auf diesem Gerät " +
@@ -983,171 +971,181 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Section(title: String, body: String) {
         Column(Modifier.padding(bottom = 18.dp)) {
-            Micro(title, color = Accent)
+            Micro(title, Accent)
             Spacer(Modifier.height(7.dp))
-            Text(body, color = Color.White.copy(alpha = 0.84f), fontSize = 13.sp, lineHeight = 19.sp)
+            Text(
+                body, color = Color.White.copy(alpha = 0.84f),
+                fontSize = 12.sp, lineHeight = 18.sp, letterSpacing = 0.3.sp,
+                fontFamily = FontFamily.Monospace
+            )
         }
     }
 
-    // ---- Bausteine ----
+    // ---- Layoutsystem: Typografie (Skill Abschnitt 2) ----
 
     @Composable
-    private fun Micro(text: String, color: Color = Dim, size: TextUnit = 10.sp) {
+    private fun Title(text: String) {
         Text(
-            text, color = color, fontSize = size,
-            fontFamily = FontFamily.Monospace, letterSpacing = 1.2.sp
+            text, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp, fontFamily = FontFamily.Monospace
         )
     }
 
     @Composable
-    private fun SquareButton(label: String, onClick: () -> Unit) {
-        Box(
-            Modifier
-                .border(1.dp, Line, RoundedCornerShape(2.dp))
-                .clickable { onClick() }
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
-            Text(
-                label, color = Color.White, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace, letterSpacing = 1.2.sp
-            )
-        }
+    private fun Kicker(text: String, modifier: Modifier = Modifier) {
+        Text(
+            text, modifier = modifier, color = Dim, fontSize = 9.sp,
+            letterSpacing = 1.8.sp, fontFamily = FontFamily.Monospace
+        )
     }
 
     @Composable
-    private fun Pill(label: String, active: Boolean, onClick: () -> Unit) {
-        Box(
-            Modifier
-                .border(1.dp, if (active) Accent else Line, RoundedCornerShape(2.dp))
-                .clickable { onClick() }
-                .padding(horizontal = 8.dp, vertical = 4.dp)
-        ) {
-            Text(
-                label, color = if (active) Accent else Dim,
-                fontSize = 8.sp, fontFamily = FontFamily.Monospace, letterSpacing = 0.8.sp
-            )
-        }
+    private fun Micro(text: String, tone: Color = Dim) {
+        Text(text, color = tone, fontSize = 9.sp, letterSpacing = 1.4.sp, fontFamily = FontFamily.Monospace)
     }
 
     @Composable
-    private fun Speedo(fraction: Float, percent: Int) {
-        val f = fraction.coerceIn(0f, 1f)
-        val color = if (f >= 1f) Good else Accent
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(78.dp)) {
-            Canvas(Modifier.size(78.dp)) {
-                val stroke = 4.dp.toPx()
-                val d = size.minDimension - stroke
-                val topLeft = Offset((size.width - d) / 2f, (size.height - d) / 2f)
-                drawArc(
-                    color = Line, startAngle = 135f, sweepAngle = 270f, useCenter = false,
-                    topLeft = topLeft, size = Size(d, d),
-                    style = Stroke(width = stroke, cap = StrokeCap.Butt)
+    private fun Value(text: String, tone: Color = Color.White) {
+        Text(
+            text, color = tone, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace, maxLines = 1
+        )
+    }
+
+    @Composable
+    private fun Body(text: String) {
+        Text(
+            text, color = Color.White, fontSize = 12.sp, letterSpacing = 0.3.sp,
+            fontFamily = FontFamily.Monospace, maxLines = 1
+        )
+    }
+
+    @Composable
+    private fun Mono(text: String) {
+        Text(
+            text, color = Dim, fontSize = 10.sp, letterSpacing = 0.2.sp,
+            fontFamily = FontFamily.Monospace, maxLines = 1
+        )
+    }
+
+    // ---- Layoutsystem: Komponenten (Skill Abschnitt 4) ----
+
+    @Composable
+    private fun Osw(
+        kicker: String,
+        title: String,
+        action: (@Composable () -> Unit)? = null,
+        onKickerClick: (() -> Unit)? = null
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Kicker(
+                    kicker,
+                    if (onKickerClick == null) {
+                        Modifier
+                    } else {
+                        Modifier.clickable { onKickerClick() }.padding(vertical = 6.dp)
+                    }
                 )
-                if (f > 0f) {
-                    drawArc(
-                        color = color, startAngle = 135f, sweepAngle = 270f * f, useCenter = false,
-                        topLeft = topLeft, size = Size(d, d),
-                        style = Stroke(width = stroke, cap = StrokeCap.Butt)
-                    )
-                }
+                Spacer(Modifier.height(2.dp))
+                Title(title)
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    "$percent",
-                    color = Color.White, fontSize = 17.sp,
-                    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
-                )
-                Micro("% AOT", color = color, size = 8.sp)
+            if (action != null) {
+                Spacer(Modifier.width(12.dp))
+                action()
             }
         }
     }
 
     @Composable
-    private fun WideButton(label: String, onClick: () -> Unit) {
+    private fun WideButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+        val source = remember { MutableInteractionSource() }
+        val pressed by source.collectIsPressedAsState()
+        val filled = pressed && enabled
         Box(
             Modifier
                 .fillMaxWidth()
-                .border(1.dp, Line, RoundedCornerShape(2.dp))
-                .clickable { onClick() }
-                .padding(vertical = 11.dp),
+                .border(1.dp, if (enabled) Accent else Line, RoundedCornerShape(2.dp))
+                .background(if (filled) Accent else Color.Transparent, RoundedCornerShape(2.dp))
+                .clickable(
+                    enabled = enabled,
+                    interactionSource = source,
+                    indication = null
+                ) { onClick() }
+                .padding(vertical = 12.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                label, color = Color.White, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace, letterSpacing = 1.2.sp
+                text,
+                color = when {
+                    !enabled -> Dim
+                    filled -> Color.Black
+                    else -> Color.White
+                },
+                fontSize = 11.sp, letterSpacing = 1.4.sp, fontFamily = FontFamily.Monospace
             )
         }
     }
 
     @Composable
-    private fun RunPanel(done: Int, total: Int, pkg: String?, history: List<Float>) {
-        val pulse = rememberInfiniteTransition(label = "run")
-        val dotAlpha by pulse.animateFloat(
-            initialValue = 0.15f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(650), RepeatMode.Reverse),
-            label = "dot"
-        )
-        OutlineBox {
-            Column(Modifier.padding(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(6.dp).background(Accent.copy(alpha = dotAlpha)))
-                    Spacer(Modifier.width(8.dp))
-                    Micro("LÄUFT · $done / $total", color = Accent)
-                    Spacer(Modifier.weight(1f))
-                    Micro(
-                        if (history.isNotEmpty()) "CPU ${(history.last() * 100).toInt()} %" else "CPU —",
-                        color = Dim
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                CpuHistogram(history)
-                Spacer(Modifier.height(10.dp))
-                ThinBar(if (total == 0) 0f else done.toFloat() / total)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    pkg ?: "",
-                    color = Dim, fontSize = 9.sp, fontFamily = FontFamily.Monospace, maxLines = 1
-                )
-            }
+    private fun MiniButton(text: String, onClick: () -> Unit) {
+        val source = remember { MutableInteractionSource() }
+        val pressed by source.collectIsPressedAsState()
+        Box(
+            Modifier
+                .height(36.dp)
+                .border(1.dp, Line, RoundedCornerShape(2.dp))
+                .background(if (pressed) Panel else Color.Transparent, RoundedCornerShape(2.dp))
+                .clickable(interactionSource = source, indication = null) { onClick() }
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text, color = Color.White, fontSize = 11.sp,
+                letterSpacing = 1.4.sp, fontFamily = FontFamily.Monospace, maxLines = 1
+            )
         }
     }
 
     @Composable
-    private fun CpuHistogram(history: List<Float>) {
-        Canvas(Modifier.fillMaxWidth().height(46.dp)) {
-            val slots = 48
-            val slotWidth = size.width / slots
-            val barWidth = slotWidth * 0.62f
-            val shift = slots - history.size
-            for (i in 0 until slots) {
-                val index = i - shift
-                val value = if (index >= 0) history[index].coerceIn(0f, 1f) else 0f
-                val barHeight = if (value > 0f) (size.height * value).coerceAtLeast(2f) else 1f
-                val x = i * slotWidth + (slotWidth - barWidth) / 2f
-                drawRect(
-                    color = if (value > 0f) Accent else Line,
-                    topLeft = Offset(x, size.height - barHeight),
-                    size = Size(barWidth, barHeight)
-                )
-            }
-        }
-    }
-
-    @Composable
-    private fun ThinBar(fraction: Float) {
-        Box(Modifier.fillMaxWidth().height(2.dp).background(Line)) {
+    private fun Pill(text: String, selected: Boolean, onClick: () -> Unit) {
+        Box(
+            Modifier.height(44.dp).clickable { onClick() },
+            contentAlignment = Alignment.Center
+        ) {
             Box(
                 Modifier
-                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
-                    .height(2.dp)
-                    .background(if (fraction >= 1f) Good else Accent)
+                    .height(32.dp)
+                    .border(1.dp, if (selected) Accent else Line, RoundedCornerShape(2.dp))
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text, color = if (selected) Accent else Dim, fontSize = 11.sp,
+                    letterSpacing = 1.4.sp, fontFamily = FontFamily.Monospace, maxLines = 1
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun Chip(text: String, tone: Color) {
+        Box(
+            Modifier
+                .height(24.dp)
+                .border(1.dp, tone.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
+                .padding(horizontal = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text, color = tone, fontSize = 9.sp,
+                letterSpacing = 1.0.sp, fontFamily = FontFamily.Monospace, maxLines = 1
             )
         }
     }
 
     @Composable
-    private fun OutlineBox(content: @Composable () -> Unit) {
+    private fun OutlineBox(content: @Composable ColumnScope.() -> Unit) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1155,6 +1153,86 @@ class MainActivity : ComponentActivity() {
                 .background(Panel, RoundedCornerShape(2.dp))
         ) {
             content()
+        }
+    }
+
+    @Composable
+    private fun SummaryPanel(items: List<Pair<String, String>>) {
+        OutlineBox {
+            Row(
+                Modifier.fillMaxWidth().padding(10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items.forEach { (label, value) ->
+                    Column {
+                        Micro(label)
+                        Spacer(Modifier.height(2.dp))
+                        Value(value)
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun LivePanel(cpu: List<Float>, ram: List<Float>) {
+        OutlineBox {
+            Column(Modifier.padding(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Micro("LIVE")
+                    Spacer(Modifier.weight(1f))
+                    Micro("TAKT 700 MS")
+                }
+                Spacer(Modifier.height(8.dp))
+                Histogram("CPU", cpu)
+                Spacer(Modifier.height(8.dp))
+                Histogram("RAM", ram)
+            }
+        }
+    }
+
+    @Composable
+    private fun Histogram(label: String, values: List<Float>) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(30.dp)) { Micro(label) }
+            Canvas(Modifier.weight(1f).height(46.dp)) {
+                val slots = 48
+                val slotWidth = size.width / slots
+                val barWidth = slotWidth * 0.62f
+                val shift = slots - values.size
+                for (i in 0 until slots) {
+                    val index = i - shift
+                    val v = if (index in values.indices) values[index].coerceIn(0f, 1f) else 0f
+                    val barHeight = if (v > 0f) (size.height * v).coerceAtLeast(2f) else 1f
+                    drawRect(
+                        color = if (v > 0f) Accent else Line,
+                        topLeft = Offset(i * slotWidth + (slotWidth - barWidth) / 2f, size.height - barHeight),
+                        size = Size(barWidth, barHeight)
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(Modifier.width(68.dp)) {
+                Text(
+                    if (values.isEmpty()) "—" else "${(values.last() * 100).toInt()} %",
+                    color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace, textAlign = TextAlign.End, maxLines = 1
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun Bar(fraction: Float) {
+        val f = fraction.coerceIn(0f, 1f)
+        Box(Modifier.fillMaxWidth().height(2.dp).background(Line)) {
+            Box(
+                Modifier
+                    .fillMaxWidth(f)
+                    .height(2.dp)
+                    .background(if (f >= 1f) Good else Accent)
+            )
         }
     }
 }
